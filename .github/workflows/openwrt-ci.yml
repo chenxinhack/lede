@@ -21,7 +21,7 @@ jobs:
           ref: master
           fetch-depth: 1
 
-      - name: Space cleanup
+      - name: Space cleanup and install dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -29,10 +29,21 @@ jobs:
           if [ -n "$(docker images -q)" ]; then
             docker rmi $(docker images -q) -f
           fi
+          # 清理无用软件
           sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
           sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
+          # 更新软件源并安装依赖（替换不可用的包）
           sudo -E apt-get update
-          sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig libtinfo5
+          sudo -E apt-get -y install \
+            build-essential asciidoc binutils bzip2 gawk gettext git \
+            libncurses5-dev libz-dev patch python3 unzip zlib1g-dev \
+            lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs \
+            gcc-multilib p7zip p7zip-full libssl-dev texinfo \
+            qemu-utils upx libelf-dev autoconf automake libtool \
+            device-tree-compiler gperf swig libtinfo6 \
+            # 替换不可用的包：
+            libglib2.0-dev xmlto msmtp autopoint antlr3-python3-runtime
+          # 自动移除无用依赖并清理
           sudo -E apt-get -y autoremove --purge
           sudo -E apt-get clean
           df -h
