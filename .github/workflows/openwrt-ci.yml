@@ -25,7 +25,10 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          docker rmi `docker images -q`
+          # 修复：仅当存在镜像时才执行删除（避免无镜像报错）
+          if [ -n "$(docker images -q)" ]; then
+            docker rmi $(docker images -q) -f
+          fi
           sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
           sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
           sudo -E apt-get update
@@ -50,10 +53,10 @@ jobs:
           touch ./.config
 
           cat >> .config <<EOF
-          # 目标平台配置（小米MI Router AC2100，同样属于mt7621架构但设备型号不同）
+          # 目标平台配置（小米MI Router AC2100）
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
-          CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y  # 关键调整：设备型号改为小米MI Router AC2100
+          CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y
 
           # 编译选项
           CONFIG_TARGET_IMAGES_GZIP=y
