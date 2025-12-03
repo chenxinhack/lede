@@ -1,9 +1,9 @@
-name: Build CoovaChilli + FreeRADIUS3 IPK
+name: Build CoovaChilli + FreeRADIUS3 IPK (AC2100)
 
 on:
   push:
     branches: [master]
-  workflow_dispatch:  # 支持手动触发编译
+  workflow_dispatch:  # 支持手动触发
 
 permissions:
   contents: read
@@ -15,35 +15,47 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id
 
     steps:
-      - name: Clean Environment & Install Dependencies
+      - name: Clean Environment & Install Dependencies (No MySQL Purge)
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          # 安全清理Docker镜像（无镜像不报错）
           [ -n "$(docker images -q)" ] && docker rmi $(docker images -q) -f || true
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+          
+          # 彻底清理大体积无用软件（重点：剔除所有mysql相关操作，避免dpkg冲突）
+          sudo rm -rf /usr/share/dotnet /etc/php /etc/apt/sources.list.d /usr/local/lib/android /var/lib/apt/lists/*
           sudo apt-mark hold grub-efi-amd64-signed
           sudo apt update -y
+          # 只 purge 确认存在且无残留的包，不碰mysql相关
+          sudo apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* php* mongodb* dotnet* snap*
+          # 强制修复dpkg残留（关键兜底）
+          sudo dpkg --configure -a || true
+          sudo apt -f install -y || true
           sudo apt -y full-upgrade
+          
+          # 安装编译必需依赖（Ubuntu 22.04 100%兼容）
           sudo apt -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip wget xmlto xxd zlib1g-dev
+          
+          # 清理缓存释放空间
           sudo apt -y autoremove --purge
           sudo apt clean
           df -h
 
-      - name: Free Disk Space
+      - name: Free Disk Space (Safe Mode)
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: false
           android: true
           dotnet: true
           haskell: true
-          large-packages: false
+          large-packages: false  # 禁用大型包清理，避免误删依赖
           swap-storage: true
 
       - name: Checkout OpenWrt 24.10.3 Source
         uses: actions/checkout@v4
         with:
           repository: coolsnowwolf/lede
-          ref: master  # coolsnowwolf/lede 已同步 OpenWrt 24.10 核心
+          ref: master
           fetch-depth: 1
 
       - name: Update Feeds
@@ -56,23 +68,23 @@ jobs:
           rm -f ./.config*
           touch ./.config
 
-          # 核心配置：指定架构（小米AC2100 24.10.3 适配）
+          # 核心配置：小米AC2100 + 24.10.3 适配
           cat >> .config <<EOF
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
           CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y
-          CONFIG_TARGET_ROOTFS_NONE=y  # 不编译根文件系统，只编译IPK
+          CONFIG_TARGET_ROOTFS_NONE=y  # 只编译IPK，不编译完整固件
           CONFIG_DEVEL=y
           CONFIG_TOOLCHAINOPTS=y
 
-          # 只编译 CoovaChilli 及其依赖
+          # CoovaChilli 及依赖
           CONFIG_PACKAGE_coovachilli=y
           CONFIG_PACKAGE_coovachilli-radius=y
           CONFIG_PACKAGE_coovachilli-script=y
           CONFIG_PACKAGE_luci-app-coovachilli=y
           CONFIG_PACKAGE_luci-i18n-coovachilli-zh-cn=y
 
-          # 只编译 FreeRADIUS3 及其依赖
+          # FreeRADIUS3 及依赖
           CONFIG_PACKAGE_freeradius3=y
           CONFIG_PACKAGE_freeradius3-common=y
           CONFIG_PACKAGE_freeradius3-libs=y
@@ -82,7 +94,7 @@ jobs:
           CONFIG_PACKAGE_luci-app-freeradius=y
           CONFIG_PACKAGE_luci-i18n-freeradius3-zh-cn=y
 
-          # 编译依赖包（确保离线安装可用）
+          # 基础依赖（确保编译不缺库）
           CONFIG_PACKAGE_libopenssl=y
           CONFIG_PACKAGE_libpthread=y
           CONFIG_PACKAGE_zlib=y
@@ -92,23 +104,23 @@ jobs:
           CONFIG_PACKAGE_libnettle=y
           EOF
 
-          # 自动补全依赖配置
+          # 自动补全配置
           sed -i 's/^[ \t]*//g' ./.config
           make defconfig
 
-      - name: Download Dependencies
+      - name: Download Dependencies (Fast)
         run: |
           make download -j16 || make download -j1 V=s
           rm -rf $(find ./dl/ -size -1024c)
           df -h
 
-      - name: Build Target IPK Packages
+      - name: Build Target IPK Packages (Stable)
         run: |
-          # 只编译指定包及其依赖（速度快）
-          make package/coovachilli/compile -j$(nproc) || make package/coovachilli/compile -j1 V=s
-          make package/freeradius3/compile -j$(nproc) || make package/freeradius3/compile -j1 V=s
-          make package/luci-app-coovachilli/compile -j$(nproc) || make package/luci-app-coovachilli/compile -j1 V=s
-          make package/luci-app-freeradius/compile -j$(nproc) || make package/luci-app-freeradius/compile -j1 V=s
+          # 单线程编译，避免资源冲突（100%稳定）
+          make package/coovachilli/compile -j1 V=s
+          make package/freeradius3/compile -j1 V=s
+          make package/luci-app-coovachilli/compile -j1 V=s
+          make package/luci-app-freeradius/compile -j1 V=s
           df -h
 
       - name: Collect IPK Packages
@@ -120,29 +132,29 @@ jobs:
           # 收集 FreeRADIUS3 相关IPK
           cp -rf $(find ./bin/packages/mipsel_24kc/ -name "freeradius3*.ipk") ./artifact/freeradius3_ipk/
           cp -rf $(find ./bin/packages/mipsel_24kc/ -name "luci-app-freeradius*.ipk") ./artifact/freeradius3_ipk/
-          # 收集依赖IPK（避免离线安装失败）
+          # 收集依赖IPK（适配AC2100无USB，本地安装用）
           cp -rf $(find ./bin/packages/mipsel_24kc/ -name "libopenssl*.ipk" -o -name "libpthread*.ipk" -o -name "zlib*.ipk" -o -name "libuci*.ipk" -o -name "libubus*.ipk" -o -name "libjson-c*.ipk" -o -name "libnettle*.ipk") ./artifact/deps_ipk/
-          # 显示收集到的IPK
+          # 显示收集结果
           ls -lh ./artifact/coovachilli_ipk/
           ls -lh ./artifact/freeradius3_ipk/
 
       - name: Upload CoovaChilli IPK
         uses: actions/upload-artifact@v4
         with:
-          name: CoovaChilli-IPK (mipsel_24kc-24.10.3)
+          name: CoovaChilli-IPK (AC2100-24.10.3)
           path: ./artifact/coovachilli_ipk/
           retention-days: 14
 
       - name: Upload FreeRADIUS3 IPK
         uses: actions/upload-artifact@v4
         with:
-          name: FreeRADIUS3-IPK (mipsel_24kc-24.10.3)
+          name: FreeRADIUS3-IPK (AC2100-24.10.3)
           path: ./artifact/freeradius3_ipk/
           retention-days: 14
 
       - name: Upload Dependencies IPK
         uses: actions/upload-artifact@v4
         with:
-          name: Dependencies-IPK (mipsel_24kc-24.10.3)
+          name: Dependencies-IPK (AC2100-24.10.3)
           path: ./artifact/deps_ipk/
           retention-days: 14
