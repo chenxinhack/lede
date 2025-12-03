@@ -1,76 +1,73 @@
-name: Build-OpenWrt-AC2100-Coova-Radius
+name: Build-AC2100-Coova-Radius
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - master
-  watch:
-    types: [started]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    if: github.event.repository.owner.id == github.event.sender.id
-
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Install Build Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile || true
+          sudo docker rmi $(docker images -q) || true
+          sudo apt update
+          sudo apt install -y build-essential asciidoc binutils bzip2 gawk gettext git \
+            libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 \
+            subversion flex uglifyjs gcc-multilib g++-multilib p7zip-full msmtp libssl-dev \
+            texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool \
+            autopoint device-tree-compiler antlr3 gperf swig libtinfo5
 
-    - name: Install Dependencies & Free Space
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo swapoff -a
-        sudo rm -f /swapfile
-        sudo docker rmi $(docker images -q) || true
-        sudo apt-get update
-        sudo apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git \
-          libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 \
-          subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev \
-          texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool \
-          autopoint device-tree-compiler antlr3 gperf swig libtinfo5
+      - name: Clone Source
+        run: |
+          git clone https://github.com/coolsnowwolf/lede openwrt
 
-    - name: Clone Source
-      run: |
-        git clone https://github.com/coolsnowwolf/lede openwrt
+      - name: Update Feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: Update Feeds
-      working-directory: openwrt
-      run: |
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-
-    - name: Apply Config (AC2100)
-      working-directory: openwrt
-      run: |
-        cat << "EOF" > .config
+      - name: Apply Config for AC2100 + Coova + Radius
+        working-directory: openwrt
+        run: |
+          rm -f .config
+          cat >> .config << "EOF"
 CONFIG_TARGET_ramips=y
 CONFIG_TARGET_ramips_mt7621=y
 CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_ac2100=y
 
-# Build settings
 CONFIG_TARGET_IMAGES_GZIP=y
 
-# UI
 CONFIG_LUCI_LANG_zh-cn=y
 CONFIG_PACKAGE_luci-theme-argon=y
 CONFIG_PACKAGE_luci-i18n-argon-zh-cn=y
 
-# CoovaChilli + Radius
 CONFIG_PACKAGE_coova-chilli=y
 CONFIG_PACKAGE_luci-app-coova-chilli=y
 
 CONFIG_PACKAGE_freeradius3=y
-CONFIG_PACKAGE_freeradius3-common=y
 CONFIG_PACKAGE_freeradius3-mod-eap=y
 CONFIG_PACKAGE_freeradius3-utils=y
 EOF
 
-    - name: Build OpenWrt
-      working-directory: openwrt
-      run: |
-        make defconfig
-        make -j$(nproc) || make -j1 V=s
+          sed -i 's/^[ \t]*//g' .config
+          make defconfig
+
+      - name: Build Firmware
+        working-directory: openwrt
+        run: |
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AC2100-Coova-Radius
+          path: openwrt/bin/targets/
