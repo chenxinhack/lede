@@ -1,4 +1,4 @@
-name: OpenWrt-CI
+name: OpenWrt-CI for Xiaomi MI Router AC2100
 
 on:
   push:
@@ -9,155 +9,176 @@ on:
 
 jobs:
   build_openwrt:
-    name: Build OpenWrt firmware
+    name: Build OpenWrt Firmware
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
 
     steps:
-      - name: Checkout
+      - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
           repository: coolsnowwolf/lede
           ref: master
           fetch-depth: 1
 
-      - name: Space cleanup and install dependencies
+      - name: Clean System & Install Dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          # 修复：仅当存在镜像时才执行删除（避免无镜像报错）
-          if [ -n "$(docker images -q)" ]; then
-            docker rmi $(docker images -q) -f
-          fi
-          # 清理无用软件
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+          # 安全清理Docker镜像（无镜像时不报错）
+          [ -n "$(docker images -q)" ] && docker rmi $(docker images -q) -f || true
+          
+          # 深度清理系统垃圾
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android /var/lib/apt/lists/*
           sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
-          # 更新软件源并安装依赖（替换不可用的包）
-          sudo -E apt-get update
+          
+          # 更新软件源（使用官方源确保稳定性）
+          sudo -E apt-get update -y
+          
+          # 安装OpenWrt编译必需依赖（仅保留可用包，经实测无报错）
           sudo -E apt-get -y install \
             build-essential asciidoc binutils bzip2 gawk gettext git \
             libncurses5-dev libz-dev patch python3 unzip zlib1g-dev \
             lib32gcc-s1 libc6-dev-i386 subversion flex uglifyjs \
-            gcc-multilib p7zip p7zip-full libssl-dev texinfo \
-            qemu-utils upx libelf-dev autoconf automake libtool \
-            device-tree-compiler gperf swig libtinfo6 \
-            # 替换不可用的包：
-            libglib2.0-dev xmlto msmtp autopoint antlr3-python3-runtime
-          # 自动移除无用依赖并清理
+            p7zip p7zip-full libssl-dev texinfo libtinfo6 \
+            autoconf automake libtool swig msmtp libglib2.0-dev \
+            xmlto autopoint antlr3-python3-runtime
+          
+          # 清理缓存释放空间
           sudo -E apt-get -y autoremove --purge
           sudo -E apt-get clean
           df -h
 
-      - name: Add Argon theme
+      - name: Add Argon Theme (Latest Version)
         run: |
-          git clone https://github.com/jerrykuku/luci-theme-argon.git package/lean/luci-theme-argon
-          git clone https://github.com/jerrykuku/luci-app-argon-config.git package/lean/luci-app-argon-config
+          # 确保目录存在
+          mkdir -p package/lean
+          # 克隆Argon主题及配置插件
+          git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/lean/luci-theme-argon
+          git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/lean/luci-app-argon-config
 
-      - name: Update feeds
+      - name: Update & Install Feeds
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Generate configuration file
+      - name: Generate Compile Configuration
         run: |
           rm -f ./.config*
           touch ./.config
 
+          # 核心配置（精准匹配小米MI Router AC2100）
           cat >> .config <<EOF
-          # 目标平台配置（小米MI Router AC2100）
+          # 目标平台（MT7621架构，小米MI AC2100）
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
           CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y
 
-          # 编译选项
+          # 编译基础选项
           CONFIG_TARGET_IMAGES_GZIP=y
           CONFIG_KERNEL_BUILD_USER="OpenWrt-CI"
-          CONFIG_KERNEL_BUILD_DOMAIN="GitHub-Actions"
+          CONFIG_KERNEL_BUILD_DOMAIN="GitHub"
           CONFIG_KERNEL_ENABLE_CPU_FREQ=y
+          CONFIG_DEVEL=y
+          CONFIG_TOOLCHAINOPTS=y
 
-          # 中文支持
+          # 中文语言支持（系统默认中文）
           CONFIG_LUCI_LANG_zh_Hans=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
 
-          # Argon主题
+          # Argon主题（默认启用）
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-argon-config=y
+          CONFIG_PACKAGE_luci-theme-bootstrap=n  # 禁用默认主题，减少体积
 
-          # Coovachilli相关
+          # Coovachilli (WiFi认证服务)
           CONFIG_PACKAGE_coovachilli=y
           CONFIG_PACKAGE_coovachilli-radius=y
           CONFIG_PACKAGE_coovachilli-script=y
           CONFIG_PACKAGE_luci-app-coovachilli=y
           CONFIG_PACKAGE_luci-i18n-coovachilli-zh-cn=y
 
-          # FreeRADIUS3相关
+          # FreeRADIUS3 (认证服务器)
           CONFIG_PACKAGE_freeradius3=y
           CONFIG_PACKAGE_freeradius3-common=y
           CONFIG_PACKAGE_freeradius3-libs=y
           CONFIG_PACKAGE_freeradius3-utils=y
           CONFIG_PACKAGE_freeradius3-eap=y
-          CONFIG_PACKAGE_freeradius3-radclient=y
           CONFIG_PACKAGE_luci-app-freeradius=y
           CONFIG_PACKAGE_luci-i18n-freeradius3-zh-cn=y
 
-          # 基础工具
+          # 基础实用工具
           CONFIG_PACKAGE_openssh-server=y
           CONFIG_PACKAGE_wget=y
           CONFIG_PACKAGE_curl=y
           CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_dosfstools=y
+          CONFIG_PACKAGE_e2fsprogs=y
+          CONFIG_PACKAGE_fdisk=y
+
+          # 关闭不必要功能（减少编译时间和固件体积）
+          CONFIG_PACKAGE_luci-app-ddns=n
+          CONFIG_PACKAGE_luci-app-vlmcsd=n
+          CONFIG_PACKAGE_luci-app-upnp=n
           EOF
 
+          # 自动补全配置并去重
           sed -i 's/^[ \t]*//g' ./.config
           make defconfig
 
-      - name: Make download
+      - name: Download Dependencies
         run: |
-          make download -j8 || make download -j1 V=s
+          make download -j$(nproc) || make download -j1 V=s
+          # 清理无效下载文件
           rm -rf $(find ./dl/ -size -1024c)
           df -h
 
-      - name: Compile firmware
+      - name: Compile Firmware
         run: |
-          make -j$(nproc) || make -j1 V=s
+          # 限制线程避免内存溢出（GitHub CI内存有限）
+          make -j$(($(nproc) - 1)) || make -j1 V=s
           echo "======================="
-          echo "Space usage:"
+          echo "Compilation Completed!"
           echo "======================="
           df -h
-          du -h ./ --max-depth=1
+          du -h ./bin/targets/ramips/mt7621/ --max-depth=1
 
-      - name: Prepare artifact
+      - name: Organize Artifacts
         run: |
-          mkdir -p ./artifact/firmware
-          mkdir -p ./artifact/package
-          mkdir -p ./artifact/buildinfo
-          rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/targets/ -type f) ./artifact/firmware/
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
-          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+          mkdir -p ./artifact/firmware ./artifact/packages ./artifact/buildinfo
+          # 复制固件（只保留可用镜像）
+          cp -rf ./bin/targets/ramips/mt7621/*.bin* ./artifact/firmware/
+          cp -rf ./bin/targets/ramips/mt7621/*.gz ./artifact/firmware/
+          # 复制IPK包
+          cp -rf ./bin/packages/mipsel_24kc/*/*.ipk ./artifact/packages/
+          # 复制编译信息
+          cp -rf ./bin/targets/ramips/mt7621/*.buildinfo ./artifact/buildinfo/
+          cp -rf ./bin/targets/ramips/mt7621/*.manifest ./artifact/buildinfo/
 
-      - name: Deliver buildinfo
+      - name: Upload Build Info
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_buildinfo
+          name: OpenWrt-Build-Info
           path: ./artifact/buildinfo/
 
-      - name: Deliver package
+      - name: Upload Packages
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_package
-          path: ./artifact/package/
+          name: OpenWrt-IPK-Packages
+          path: ./artifact/packages/
 
-      - name: Deliver firmware
+      - name: Upload Firmware
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_firmware
-          path: ./bin/targets/
+          name: Xiaomi-MI-AC2100-Firmware
+          path: ./artifact/firmware/
 
-      - name: Upload release asset
-        if: github.event == 'release'
+      - name: Upload to Release (if published)
+        if: github.event_name == 'release'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ./artifact/firmware/*
           tag: ${{ github.ref }}
           file_glob: true
+          overwrite: true
