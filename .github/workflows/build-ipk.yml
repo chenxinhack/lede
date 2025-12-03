@@ -1,190 +1,57 @@
-name: Build CoovaChilli 1.8 (Official) + FreeRADIUS3 IPK (AC2100)
+name: Build CoovaChilli 1.8 and FreeRADIUS
 
 on:
   push:
-    branches: [master]
-  workflow_dispatch:  # 支持手动触发
-
-permissions:
-  contents: read
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build_ipk:
-    name: Build Official CoovaChilli 1.8 + FreeRADIUS3
-    runs-on: ubuntu-22.04
-    if: github.event.repository.owner.id == github.event.sender.id
+  build:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Clean Environment & Install Dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          [ -n "$(docker images -q)" ] && docker rmi $(docker images -q) -f || true
-          sudo rm -rf /usr/share/dotnet /etc/php /etc/apt/sources.list.d /usr/local/lib/android /var/lib/apt/lists/*
-          sudo apt-mark hold grub-efi-amd64-signed
-          sudo apt update -y
-          sudo apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* php* mongodb* dotnet* snap*
-          sudo dpkg --configure -a || true
-          sudo apt -f install -y || true
-          sudo apt -y full-upgrade
-          # 安装编译必需依赖（含OpenWrt打包工具）
-          sudo apt -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip wget xmlto xxd zlib1g-dev
-          sudo apt -y autoremove --purge
-          sudo apt clean
-          df -h
+    - name: Checkout CoovaChilli 1.8
+      uses: actions/checkout@v4
+      with:
+        repository: coova/coova-chilli
+        ref: 1.8
+        path: coova-chilli
 
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          swap-storage: true
+    - name: Checkout FreeRADIUS Server
+      uses: actions/checkout@v4
+      with:
+        repository: FreeRADIUS/freeradius-server
+        path: freeradius-server
 
-      - name: Checkout OpenWrt 24.10.3 SDK (核心编译环境)
-        uses: actions/checkout@v4
-        with:
-          repository: coolsnowwolf/lede
-          ref: master
-          fetch-depth: 1
-          path: lede
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        # 通用依赖
+        sudo apt-get install -y build-essential autoconf automake libtool pkg-config
+        # CoovaChilli 依赖
+        sudo apt-get install -y libssl-dev libpcre3-dev iptables-dev
+        # FreeRADIUS 依赖
+        sudo apt-get install -y libtalloc-dev libkqueue-dev libssl-dev libpcap-dev \
+                                 libgdbm-dev libldap2-dev libmysqlclient-dev libpq-dev \
+                                 libkrb5-dev libperl-dev python3-dev
 
-      - name: Download CoovaChilli 1.8 Official Source
-        run: |
-          cd lede/package
-          # 创建coovachilli目录
-          mkdir -p coovachilli
-          cd coovachilli
-          # 克隆官方1.8分支源码
-          git clone --depth 1 --branch 1.8 https://github.com/coova/coova-chilli.git src
-          # 下载OpenWrt适配的Makefile（用于打包IPK）
-          wget -O Makefile https://raw.githubusercontent.com/openwrt/packages/openwrt-24.10/net/coovachilli/Makefile
-          # 修复Makefile中的源码路径（指向本地克隆的src目录）
-          sed -i 's/PKG_SOURCE_URL:=.*/PKG_SOURCE_URL:=./src/' Makefile
-          sed -i 's/PKG_SOURCE_PROTO:=git//' Makefile
-          sed -i 's/PKG_SOURCE_VERSION:=.*/PKG_SOURCE_VERSION:=1.8/' Makefile
-          sed -i 's/PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=skip/' Makefile
+    - name: Build CoovaChilli 1.8
+      run: |
+        cd coova-chilli
+        sh bootstrap
+        ./configure --prefix=/usr/local/coova-chilli
+        make -j$(nproc)
+        sudo make install
 
-      - name: Add FreeRADIUS3 Feeds
-        run: |
-          cd lede
-          # 添加OpenWrt官方feeds（获取FreeRADIUS3及LuCI界面）
-          echo "src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10" >> ./feeds.conf.default
-          echo "src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10" >> ./feeds.conf.default
-          # 更新feeds并安装依赖
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # 手动安装FreeRADIUS3及LuCI管理界面
-          ./scripts/feeds install freeradius3 luci-app-freeradius luci-app-coovachilli
+    - name: Build FreeRADIUS Server
+      run: |
+        cd freeradius-server
+        ./configure --prefix=/usr/local/freeradius
+        make -j$(nproc)
+        sudo make install
 
-      - name: Generate Compile Configuration
-        run: |
-          cd lede
-          rm -f ./.config*
-          touch ./.config
-
-          # 核心配置（小米AC2100适配）
-          cat >> .config <<EOF
-          CONFIG_TARGET_ramips=y
-          CONFIG_TARGET_ramips_mt7621=y
-          CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y
-          CONFIG_TARGET_ROOTFS_NONE=y  # 只编译IPK，不编译固件
-          CONFIG_DEVEL=y
-          CONFIG_TOOLCHAINOPTS=y
-
-          # 编译CoovaChilli 1.8（官方源码）
-          CONFIG_PACKAGE_coovachilli=y
-          CONFIG_PACKAGE_coovachilli-radius=y
-          CONFIG_PACKAGE_coovachilli-script=y
-          CONFIG_PACKAGE_luci-app-coovachilli=y
-          CONFIG_PACKAGE_luci-i18n-coovachilli-zh-cn=y
-
-          # 编译FreeRADIUS3
-          CONFIG_PACKAGE_freeradius3=y
-          CONFIG_PACKAGE_freeradius3-common=y
-          CONFIG_PACKAGE_freeradius3-libs=y
-          CONFIG_PACKAGE_freeradius3-utils=y
-          CONFIG_PACKAGE_freeradius3-eap=y
-          CONFIG_PACKAGE_freeradius3-radclient=y
-          CONFIG_PACKAGE_luci-app-freeradius=y
-          CONFIG_PACKAGE_luci-i18n-freeradius3-zh-cn=y
-
-          # 基础依赖（确保编译通过）
-          CONFIG_PACKAGE_libopenssl=y
-          CONFIG_PACKAGE_libpthread=y
-          CONFIG_PACKAGE_zlib=y
-          CONFIG_PACKAGE_libuci=y
-          CONFIG_PACKAGE_libubus=y
-          CONFIG_PACKAGE_libjson-c=y
-          CONFIG_PACKAGE_libnettle=y
-          CONFIG_PACKAGE_libpcap=y
-          CONFIG_PACKAGE_libtalloc=y
-          CONFIG_PACKAGE_libtdb=y
-          CONFIG_PACKAGE_libtevent=y
-          EOF
-
-          # 自动补全配置
-          sed -i 's/^[ \t]*//g' ./.config
-          make defconfig
-
-      - name: Download Dependencies
-        run: |
-          cd lede
-          make download -j16 || make download -j1 V=s
-          rm -rf $(find ./dl/ -size -1024c)
-          df -h
-
-      - name: Build CoovaChilli 1.8 (Official) + Dependencies
-        run: |
-          cd lede
-          # 先编译依赖库
-          make package/libopenssl/compile -j1 V=s
-          make package/libjson-c/compile -j1 V=s
-          make package/libnettle/compile -j1 V=s
-          make package/libpcap/compile -j1 V=s
-          # 编译CoovaChilli 1.8（官方源码）
-          make package/coovachilli/compile -j1 V=s
-          # 编译FreeRADIUS3
-          make package/freeradius3/compile -j1 V=s
-          # 编译LuCI管理界面
-          make package/luci-app-coovachilli/compile -j1 V=s
-          make package/luci-app-freeradius/compile -j1 V=s
-          df -h
-
-      - name: Collect IPK Packages
-        run: |
-          mkdir -p ./artifact/coovachilli_1.8_ipk ./artifact/freeradius3_ipk ./artifact/deps_ipk
-          # 收集CoovaChilli 1.8（官方）IPK
-          cp -rf $(find ./lede/bin/packages/mipsel_24kc/ -name "coovachilli*.ipk") ./artifact/coovachilli_1.8_ipk/
-          cp -rf $(find ./lede/bin/packages/mipsel_24kc/ -name "luci-app-coovachilli*.ipk") ./artifact/coovachilli_1.8_ipk/
-          # 收集FreeRADIUS3 IPK
-          cp -rf $(find ./lede/bin/packages/mipsel_24kc/ -name "freeradius3*.ipk") ./artifact/freeradius3_ipk/
-          cp -rf $(find ./lede/bin/packages/mipsel_24kc/ -name "luci-app-freeradius*.ipk") ./artifact/freeradius3_ipk/
-          # 收集依赖IPK
-          cp -rf $(find ./lede/bin/packages/mipsel_24kc/ -name "libopenssl*.ipk" -o -name "libjson-c*.ipk" -o -name "libnettle*.ipk" -o -name "libpcap*.ipk" -o -name "libtalloc*.ipk" -o -name "libtdb*.ipk" -o -name "libtevent*.ipk") ./artifact/deps_ipk/
-          # 显示收集结果
-          ls -lh ./artifact/coovachilli_1.8_ipk/
-          ls -lh ./artifact/freeradius3_ipk/
-
-      - name: Upload CoovaChilli 1.8 IPK
-        uses: actions/upload-artifact@v4
-        with:
-          name: CoovaChilli-1.8-Official (AC2100-24.10.3)
-          path: ./artifact/coovachilli_1.8_ipk/
-          retention-days: 14
-
-      - name: Upload FreeRADIUS3 IPK
-        uses: actions/upload-artifact@v4
-        with:
-          name: FreeRADIUS3 (AC2100-24.10.3)
-          path: ./artifact/freeradius3_ipk/
-          retention-days: 14
-
-      - name: Upload Dependencies IPK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Dependencies-IPK (AC2100-24.10.3)
-          path: ./artifact/deps_ipk/
-          retention-days: 14
+    - name: Verify installations
+      run: |
+        /usr/local/coova-chilli/bin/chilli --version
+        /usr/local/freeradius/sbin/radiusd -v
