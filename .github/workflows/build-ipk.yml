@@ -4,9 +4,9 @@
 name: Build CoovaChilli-FreeRADIUS3 (Mi AC2100)
 
 on:
+  workflow_dispatch:  # 仅保留手动触发，避免定时无意义运行
   schedule:
     - cron: '0 20 * * *'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,28 +15,31 @@ jobs:
   build_packages:
     name: Build for Xiaomi AC2100 (MT7621)
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: ./openwrt  # 全局指定工作目录，避免重复cd
 
     steps:
-      # 1. 清理环境+安装编译依赖
-      - name: Clean space and init environment
+      # 1. 系统环境初始化（补全所有编译依赖）
+      - name: Initialize System Environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          docker rmi `docker images -q`
-          sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
-          sudo -E apt-mark hold grub-efi-amd64-signed
-          sudo -E apt update
-          sudo -E apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* dotnet* snap*
-          sudo -E apt -y full-upgrade
-          # 安装完整依赖（含OpenSSL/ca-bundle相关）
-          sudo -E apt -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev ca-certificates libssl-dev libpam0g-dev
-          sudo -E systemctl daemon-reload
-          sudo -E apt -y autoremove --purge
-          sudo -E apt clean
-          sudo -E timedatectl set-timezone "Asia/Shanghai"
+          # 深度清理冗余软件
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+          sudo apt-mark hold grub-efi-amd64-signed
+          sudo apt update && sudo apt -y full-upgrade
+          sudo apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* snap*
+          
+          # 安装完整编译依赖（含ca-bundle/openssl底层依赖）
+          sudo apt -y install build-essential asciidoc binutils bison bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev ca-certificates libssl-dev libpam0g-dev
+          
+          # 清理+时区设置
+          sudo apt -y autoremove --purge && sudo apt clean
+          sudo timedatectl set-timezone "Asia/Shanghai"
 
-      # 2. 额外释放磁盘空间
-      - name: Free Disk Space (Ubuntu)
+      # 2. 释放磁盘空间（关键：OpenWrt完整源码需要约20G空间）
+      - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -46,119 +49,127 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      # 3. 拉取OpenWrt完整源码（替代SDK，解决Makefile缺失问题）
-      - name: Checkout OpenWrt full source (23.05)
+      # 3. 拉取OpenWrt 23.05稳定版完整源码（核心：替代有缺陷的SDK）
+      - name: Checkout OpenWrt Full Source
         uses: actions/checkout@v4
         with:
           repository: openwrt/openwrt
           ref: openwrt-23.05
           path: openwrt
+          fetch-depth: 0  # 拉取完整历史，避免git操作错误
 
-      # 4. 修复feeds源（补全缺失的依赖包）
-      - name: Fix feeds and install dependencies
+      # 4. 配置Feeds源（补全所有依赖链，解决ca-bundle/libopenssl缺失）
+      - name: Configure Feeds & Install Dependencies
         run: |
-          cd openwrt
-          # 补全所有核心feeds（解决ca-bundle/libopenssl缺失）
+          # 重置Feeds为官方完整源
           echo "src-git base https://git.openwrt.org/openwrt/openwrt.git;openwrt-23.05" > feeds.conf.default
           echo "src-git packages https://git.openwrt.org/feed/packages.git;openwrt-23.05" >> feeds.conf.default
           echo "src-git luci https://git.openwrt.org/project/luci.git;openwrt-23.05" >> feeds.conf.default
           echo "src-git routing https://git.openwrt.org/feed/routing.git;openwrt-23.05" >> feeds.conf.default
           echo "src-git telephony https://git.openwrt.org/feed/telephony.git;openwrt-23.05" >> feeds.conf.default
           
-          # 更新并安装所有基础依赖（解决unbound/ca-bundle/libopenssl缺失）
+          # 更新并安装所有Feeds（含基础依赖包）
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          ./scripts/feeds install ca-bundle libopenssl openssl-util libpam libmysqlclient libpq libldap libsasl2 libtalloc libnettle
+          
+          # 强制安装缺失的核心依赖包
+          ./scripts/feeds install -p base ca-bundle libopenssl openssl-util libc libgcc libpthread
+          ./scripts/feeds install -p packages libpam libmysqlclient libpq libldap libsasl2 libtalloc libnettle
 
-      # 5. 拉取带OpenWrt Makefile的coova-chilli/freeradius3（核心修复）
-      - name: Pull packages with OpenWrt Makefile
+      # 5. 引入带OpenWrt Makefile的coova-chilli + freeradius3（解决No rule错误）
+      - name: Add CoovaChilli & FreeRADIUS3 with Makefile
         run: |
-          cd openwrt
-          # ===== 替换1：使用OpenWrt官方维护的coova-chilli（带标准Makefile）=====
+          # ========== CoovaChilli 1.8（带OpenWrt编译规则） ==========
+          # 删除原有版本，替换为官方适配版
           rm -rf package/feeds/packages/coova-chilli
-          git clone -b openwrt-23.05 https://github.com/openwrt/packages.git tmp-packages
-          cp -rf tmp-packages/net/coova-chilli package/feeds/packages/
-          # 回退到coova-chilli 1.8版本（匹配你的需求）
+          git clone -b openwrt-23.05 https://github.com/openwrt/packages.git /tmp/openwrt-packages
+          cp -rf /tmp/openwrt-packages/net/coova-chilli package/feeds/packages/
+          rm -rf /tmp/openwrt-packages
+          
+          # 切换到coova-chilli 1.8分支（匹配你的需求）
           cd package/feeds/packages/coova-chilli
           git init
           git remote add origin https://github.com/coova/coova-chilli.git
-          git fetch origin 1.8
+          git fetch origin 1.8 --depth=1
           git checkout 1.8
-          cd ../../../../
+          cd -
+          
+          # ========== FreeRADIUS3（OpenWrt官方适配版） ==========
+          ./scripts/feeds install -p packages freeradius3 freeradius3-common freeradius3-utils freeradius3-radclient
 
-          # ===== 替换2：使用OpenWrt官方的freeradius3（带标准Makefile）=====
-          ./scripts/feeds install freeradius3
-
-      # 6. 配置小米AC2100编译环境（仅编译指定包）
-      - name: Configure for Xiaomi AC2100
+      # 6. 生成小米AC2100专属配置（仅编译目标包，禁用系统镜像）
+      - name: Generate Xiaomi AC2100 Config
         run: |
-          cd openwrt
-          rm -f ./.config*
-          touch ./.config
-          cat >> .config <<EOF
-          # 小米AC2100硬件配置
+          # 清空原有配置
+          rm -f .config .config.old
+          
+          # 写入核心配置（小米AC2100 + 仅编译目标包）
+          cat > .config <<EOF
+          # 硬件架构：小米AC2100 (MT7621)
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
           CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y
           CONFIG_TARGET_ARCH_PACKAGES="mipsel_24kc"
           CONFIG_CPU_TYPE="24kc"
           
-          # 启用必需依赖（解决unbound/ca-bundle警告）
+          # 强制启用依赖包（解决unbound警告）
           CONFIG_PACKAGE_ca-bundle=y
           CONFIG_PACKAGE_libopenssl=y
           CONFIG_PACKAGE_openssl-util=y
+          CONFIG_PACKAGE_libc=y
+          CONFIG_PACKAGE_libgcc=y
+          CONFIG_PACKAGE_libpthread=y
           
-          # 仅编译目标包（禁用系统镜像）
-          CONFIG_BUILD_OPTIONAL=y
+          # 仅编译目标插件
           CONFIG_PACKAGE_coova-chilli=y
           CONFIG_PACKAGE_freeradius3=y
           CONFIG_PACKAGE_freeradius3-common=y
           CONFIG_PACKAGE_freeradius3-utils=y
           CONFIG_PACKAGE_freeradius3-radclient=y
           
-          # 禁用所有系统镜像输出（只编译ipk）
+          # 禁用所有系统镜像编译（只输出ipk包）
           CONFIG_TARGET_IMAGES_GZIP=n
           CONFIG_TARGET_ROOTFS_TARGZ=n
           CONFIG_TARGET_ROOTFS_SQUASHFS=n
+          CONFIG_TARGET_ROOTFS_JFFS2=n
+          
+          # 关闭冗余功能，加速编译
+          CONFIG_DEBUG=n
+          CONFIG_STRIP_ALL=y
           EOF
-          # 生成配置（自动补全依赖）
+          
+          # 自动补全依赖并生成最终配置
           make defconfig
 
-      # 7. 下载所有依赖包（含ca-bundle/libopenssl）
-      - name: Download all dependencies
-        run: |
-          cd openwrt
-          make download -j16
+      # 7. 下载所有依赖包（多线程加速）
+      - name: Download Dependencies
+        run: make download -j$(nproc)
 
-      # 8. 编译coova-chilli和freeradius3（修复No rule错误）
-      - name: Compile target packages
+      # 8. 编译目标包（先编译依赖，再编译插件）
+      - name: Compile CoovaChilli & FreeRADIUS3
         run: |
-          cd openwrt
-          # 先编译依赖包（ca-bundle/libopenssl）
+          # 先编译基础依赖包（解决依赖链问题）
           make package/ca-bundle/compile V=s
           make package/libopenssl/compile V=s
-          # 再编译目标包
+          
+          # 编译目标插件（详细日志，便于调试）
           make package/coova-chilli/compile V=s
           make package/freeradius3/compile V=s
-          # 输出产物路径
-          echo "===== Compiled IPKs ====="
-          find ./bin/packages/mipsel_24kc/ -name "coova-chilli*.ipk"
-          find ./bin/packages/mipsel_24kc/ -name "freeradius3*.ipk"
 
-      # 9. 整理产物
-      - name: Prepare artifacts
+      # 9. 整理编译产物（仅保留小米AC2100可用的ipk）
+      - name: Prepare Artifacts
         run: |
-          mkdir -p ./artifact/packages
-          # 复制小米AC2100可用的ipk包
-          cp -rf $(find ./openwrt/bin/packages/mipsel_24kc/ -name "coova-chilli*.ipk") ./artifact/packages/
-          cp -rf $(find ./openwrt/bin/packages/mipsel_24kc/ -name "freeradius3*.ipk") ./artifact/packages/
-          # 复制依赖包
-          cp -rf $(find ./openwrt/bin/packages/mipsel_24kc/ -name "ca-bundle*.ipk") ./artifact/packages/
-          cp -rf $(find ./openwrt/bin/packages/mipsel_24kc/ -name "libopenssl*.ipk") ./artifact/packages/
+          mkdir -p ../artifact/packages
+          # 复制目标插件ipk
+          find ./bin/packages/mipsel_24kc/ -name "coova-chilli*.ipk" -exec cp -f {} ../artifact/packages/ \;
+          find ./bin/packages/mipsel_24kc/ -name "freeradius3*.ipk" -exec cp -f {} ../artifact/packages/ \;
+          # 复制依赖包（确保安装时不缺失）
+          find ./bin/packages/mipsel_24kc/ -name "ca-bundle*.ipk" -exec cp -f {} ../artifact/packages/ \;
+          find ./bin/packages/mipsel_24kc/ -name "libopenssl*.ipk" -exec cp -f {} ../artifact/packages/ \;
 
-      # 10. 上传产物
-      - name: Upload IPK Packages
+      # 10. 上传产物到GitHub Actions
+      - name: Upload Compiled IPK Packages
         uses: actions/upload-artifact@v4
         with:
-          name: Xiaomi-AC2100-coovachilli-freeradius3-ipk
+          name: Xiaomi-AC2100-CoovaChilli-FreeRADIUS3-IPK
           path: ./artifact/packages/
