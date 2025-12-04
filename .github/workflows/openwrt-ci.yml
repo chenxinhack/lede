@@ -1,30 +1,24 @@
-# This is free software, license use MIT.
-# 
-# Copyright (C) 2019 P3TERX <https://p3terx.com>
-# Copyright (C) 2020 KFERMercer <KFER.Mercer@gmail.com>
-# 
 # <https://github.com/KFERMercer/OpenWrt-CI>
-#
-
-name: OpenWrt-CI（小米AC2100）
+# Copyright (C) 2019 P3TERX
+# Copyright (C) 2020 KFERMercer
+name: Build CoovaChilli-FreeRADIUS3 (Mi AC2100)
 
 on:
-  push:
-    branches: 
-      - master
   schedule:
     - cron: 0 20 * * *
+  workflow_dispatch:  # 手动触发编译
 
 permissions:
   contents: read
 
 jobs:
-  build_openwrt:
-    name: 编译小米AC2100固件
+  build_packages:
+    name: Build for Xiaomi AC2100 (MT7621)
     runs-on: ubuntu-22.04
 
     steps:
-      - name: 清理空间并初始化环境
+      # 1. 清理环境+安装编译依赖
+      - name: Clean space and init environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -34,13 +28,15 @@ jobs:
           sudo -E apt update
           sudo -E apt -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* dotnet* snap*
           sudo -E apt -y full-upgrade
+          # 安装OpenWrt包编译必需依赖
           sudo -E apt -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
           sudo -E systemctl daemon-reload
           sudo -E apt -y autoremove --purge
           sudo -E apt clean
           sudo -E timedatectl set-timezone "Asia/Shanghai"
 
-      - name: 额外释放磁盘空间
+      # 2. 额外释放磁盘空间
+      - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -50,153 +46,93 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - name: 检出OpenWrt源码
-        uses: actions/checkout@v4
-
-      - name: 添加软件源（包含coova-chilli）
+      # 3. 拉取OpenWrt SDK（小米AC2100专属，MT7621架构）
+      - name: Download OpenWrt SDK for Xiaomi AC2100
         run: |
-          # 启用helloworld源和额外必要源
-          sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
-          # 添加coova-chilli依赖的包源（如有必要）
-          echo "src-git coova https://github.com/coova/coova-chilli.git;1.8" >> ./feeds.conf.default
+          # 下载小米AC2100对应的OpenWrt SDK（23.05稳定版，MT7621）
+          wget https://downloads.openwrt.org/releases/23.05.3/targets/ramips/mt7621/openwrt-sdk-23.05.3-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          tar xvf openwrt-sdk-23.05.3-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          mv openwrt-sdk-23.05.3-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64 openwrt-sdk
+          cd openwrt-sdk
+          # 配置SDK环境
+          echo "src-git packages https://git.openwrt.org/feed/packages.git;openwrt-23.05" > feeds.conf.default
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # 安装coova-chilli及其依赖
-          ./scripts/feeds install coova-chilli
 
-      - name: 定制小米AC2100配置（包含coova-chilli）
+      # 4. 直接拉取你指定的仓库源码（核心修正点）
+      - name: Pull specified repo sources
         run: |
+          cd openwrt-sdk
+          # ====================== 拉取coova-chilli 1.8分支 ======================
+          mkdir -p package/coova-chilli
+          git clone -b 1.8 https://github.com/coova/coova-chilli.git package/coova-chilli
+          # ====================== 拉取freeradius-server源码 ======================
+          mkdir -p package/freeradius3
+          git clone https://github.com/FreeRADIUS/freeradius-server.git package/freeradius3
+          # 安装编译依赖（OpenWrt标准依赖）
+          ./scripts/feeds install libssl libpam libmysqlclient libpq libldap libsasl2 libtalloc libnettle
+
+      # 5. 配置编译环境（仅小米AC2100架构，禁用系统编译）
+      - name: Configure for Xiaomi AC2100 (MT7621)
+        run: |
+          cd openwrt-sdk
           rm -f ./.config*
           touch ./.config
-
-          # 核心配置（必选）
           cat >> .config <<EOF
+          # 小米AC2100核心架构（MT7621，mipsel_24kc）
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt7621=y
           CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y
-          CONFIG_TARGET_IMAGES_GZIP=y
-          CONFIG_TARGET_ROOTFS_PARTSIZE=10
-          CONFIG_PACKAGE_base-files=y
-          CONFIG_PACKAGE_busybox=y
-          CONFIG_PACKAGE_libc=y
-          CONFIG_PACKAGE_libgcc=y
-          CONFIG_PACKAGE_mtd=y
-          CONFIG_PACKAGE_uboot-envtools=y
-          CONFIG_PACKAGE_uci=y
-          EOF
-
-          # 网络核心功能
-          cat >> .config <<EOF
-          CONFIG_PACKAGE_dnsmasq_full=y
-          CONFIG_PACKAGE_dnsmasq_full_dhcpv6=y
-          CONFIG_PACKAGE_odhcp6c=y
-          CONFIG_PACKAGE_odhcpd-ipv6only=y
-          CONFIG_PACKAGE_ipv6helper=y
-          CONFIG_PACKAGE_kmod-mt7603=y
-          CONFIG_PACKAGE_kmod-mt7615=y
-          CONFIG_PACKAGE_kmod-mt7615-firmware=y
-          CONFIG_PACKAGE_kmod-mt7615-common=y
-          CONFIG_PACKAGE_wireless-regdb=y
-          CONFIG_PACKAGE_hostapd-common=y
-          CONFIG_PACKAGE_wpa_supplicant=y
-          CONFIG_PACKAGE_iptables=y
-          CONFIG_PACKAGE_iptables-mod-conntrack-extra=y
-          CONFIG_PACKAGE_iptables-mod-ipopt=y
-          CONFIG_PACKAGE_firewall=y
-          CONFIG_PACKAGE_firewall4=y
-          CONFIG_PACKAGE_nftables=y
-          EOF
-
-          # 加入coova-chilli相关配置
-          cat >> .config <<EOF
-          # CoovaChilli配置
+          CONFIG_TARGET_ARCH_PACKAGES="mipsel_24kc"
+          CONFIG_CPU_TYPE="24kc"
+          
+          # 仅编译指定插件，禁用所有系统镜像
+          CONFIG_BUILD_OPTIONAL=y
           CONFIG_PACKAGE_coova-chilli=y
-          CONFIG_PACKAGE_coova-chilli-libs=y
-          # 启用必要的coova-chilli模块
-          CONFIG_PACKAGE_coova-chilli-modules=y
-          CONFIG_PACKAGE_coova-chilli-json=y
-          CONFIG_PACKAGE_coova-chilli-radius=y
-          # 支持Web管理界面
-          CONFIG_PACKAGE_luci-app-coova-chilli=y
-          CONFIG_PACKAGE_luci-i18n-coova-chilli-zh-cn=y
+          CONFIG_PACKAGE_freeradius3=y
+          CONFIG_PACKAGE_freeradius3-common=y
+          CONFIG_PACKAGE_freeradius3-utils=y
+          CONFIG_PACKAGE_freeradius3-radclient=y
+          
+          # 禁用系统镜像输出（只编译ipk包）
+          CONFIG_TARGET_IMAGES_GZIP=n
+          CONFIG_TARGET_ROOTFS_TARGZ=n
+          CONFIG_TARGET_ROOTFS_SQUASHFS=n
           EOF
-
-          # LuCI Web管理
-          cat >> .config <<EOF
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-app-firewall=y
-          CONFIG_PACKAGE_luci-app-network=y
-          CONFIG_PACKAGE_luci-app-system=y
-          CONFIG_PACKAGE_luci-app-wireless=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-system-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-wireless-zh-cn=y
-          CONFIG_PACKAGE_luci-app-opkg=y
-          CONFIG_PACKAGE_luci-app-wrtbwmon=y
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_luci-theme-bootstrap=y
-          EOF
-
-          # 基础工具
-          cat >> .config <<EOF
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_wget=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_tree=y
-          CONFIG_PACKAGE_ping=y
-          CONFIG_PACKAGE_telnet=y
-          CONFIG_PACKAGE_traceroute=y
-          EOF
-
-          # 取消冗余配置
-          cat >> .config <<EOF
-          # CONFIG_VMDK_IMAGES is not set
-          # CONFIG_VDI_IMAGES is not set
-          # CONFIG_VHDX_IMAGES is not set
-          # CONFIG_ISO_IMAGES is not set
-          # CONFIG_PACKAGE_kmod-usb-serial is not set
-          # CONFIG_PACKAGE_kmod-usb-printer is not set
-          # CONFIG_PACKAGE_kmod-fs-ntfs is not set
-          # CONFIG_PACKAGE_kmod-fs-nfs is not set
-          EOF
-
-          sed -i 's/^[ \t]*//g' ./.config
           make defconfig
 
-      - name: 下载依赖包（多线程加速）
-        run: make download -j16
-
-      - name: 编译固件
+      # 6. 下载依赖包（仅插件所需）
+      - name: Download dependent packages
         run: |
-          echo "使用 $(nproc) 线程编译"
-          make -j$(nproc) || make -j1 V=s
-          df -h
-          du -h --max-depth=1 ./bin/targets/
+          cd openwrt-sdk
+          make download -j16
 
-      - name: 整理产物
+      # 7. 编译指定插件（仅coova-chilli + freeradius3）
+      - name: Compile only coova-chilli & freeradius3
         run: |
-          mkdir -p ./artifact/buildinfo
-          mkdir -p ./artifact/package
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
-          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
+          cd openwrt-sdk
+          # 编译coova-chilli（详细日志）
+          make package/coova-chilli/compile V=s
+          # 编译freeradius3（详细日志）
+          make package/freeradius3/compile V=s
+          # 输出编译产物路径
+          echo "====================== 编译产物 ======================"
+          find ./bin/packages/mipsel_24kc/ -name "coova-chilli*.ipk"
+          find ./bin/packages/mipsel_24kc/ -name "freeradius3*.ipk"
 
-      - name: 上传编译信息
+      # 8. 整理产物（仅保留小米AC2100可用的ipk）
+      - name: Prepare artifacts
+        run: |
+          mkdir -p ./artifact/packages
+          # 复制编译好的ipk包（小米AC2100架构：mipsel_24kc）
+          cp -rf $(find ./openwrt-sdk/bin/packages/mipsel_24kc/ -name "coova-chilli*.ipk") ./artifact/packages/
+          cp -rf $(find ./openwrt-sdk/bin/packages/mipsel_24kc/ -name "freeradius3*.ipk") ./artifact/packages/
+          # 复制必需依赖包（确保安装时不缺失）
+          cp -rf $(find ./openwrt-sdk/bin/packages/mipsel_24kc/ -name "libssl*.ipk") ./artifact/packages/
+          cp -rf $(find ./openwrt-sdk/bin/packages/mipsel_24kc/ -name "libpam*.ipk") ./artifact/packages/
+
+      # 9. 上传编译产物（仅ipk包）
+      - name: Upload CoovaChilli & FreeRADIUS3 IPK (Mi AC2100)
         uses: actions/upload-artifact@v4
         with:
-          name: 编译信息
-          path: ./artifact/buildinfo/
-
-      - name: 上传软件包
-        uses: actions/upload-artifact@v4
-        with:
-          name: 额外IPK包
-          path: ./artifact/package/
-
-      - name: 上传固件
-        uses: actionsctions/upload-artifact@v4
-        with:
-          name: 小米AC2100-OpenWrt固件（含coova-chilli）
-          path: ./bin/targets/ramips/mt7621/
+          name: Xiaomi-AC2100-coovachilli-freeradius3-ipk
+          path: ./artifact/packages/
